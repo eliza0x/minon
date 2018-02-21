@@ -5,3 +5,12 @@ transcript
 vsim.wlf
 work
 vish_stacktrace.vstf
+c5_pin_model_dump.txt
+CPU.qpf
+CPU.qws
+*.sv.bak
+db
+devkits
+incremental_db
+output_files
+

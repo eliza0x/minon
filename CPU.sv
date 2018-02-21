@@ -148,8 +148,8 @@ module CPU(
     endfunction
 
     genvar i;
-    generate 
-        for (i=1; i<=4; i++) begin
+    generate
+        for (i=1; i<=4; i++) begin : add_module_block
             Add add_module (
                 .rstation(rstation[i]),
                 .result(result[i]),
@@ -157,7 +157,7 @@ module CPU(
                 .*
             );
         end
-        for (i=5; i<=7; i++) begin
+        for (i=5; i<=7; i++) begin : sub_module_block
             Sub sub_module (
                 .rstation(rstation[i]),
                 .result(result[i]),
