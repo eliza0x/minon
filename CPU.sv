@@ -1,5 +1,5 @@
 typedef logic [31:0] inst;
-typedef logic [1:0] ALU;
+typedef byte ALU;
 
 typedef struct {
     ALU  alu;
@@ -22,9 +22,9 @@ module CPU(
     
     inst instCache[256];
     RegF regs[32];
-    inst result[3];
-    bit  result_available[4];
-    ReservationStation rstation[4];
+    inst result[8];
+    bit  result_available[8];
+    ReservationStation rstation[8];
     inst pc;
 
     // 初期化
@@ -59,18 +59,13 @@ module CPU(
             pc <= 0;
         end else begin
             automatic inst instruction;
-            automatic logic [1:0] consumed_inst = 0;
-
-            $display("------------------------------");
+            automatic byte consumed_inst = 0;
 
             // Bload Cast: register file
             for (int l=1; l<$size(result); l++) begin
                 if (result_available[l]) begin
-                    $display("bload cast - regs: %2d, result: %d", l, result[l]);
                     for (int i=1; i<$size(regs); i++) begin
-                        $display("regs[%2d].alu: %d", i, regs[i].alu);
                         if (regs[i].alu == l) begin
-                            $display("written: %d", result[l]);
                             regs[i].data     = result[l];
                             regs[i].alu      = 2'b00;
                             rstation[l].busy = 0;
@@ -82,19 +77,14 @@ module CPU(
             // Bload Cast: reservation station
             for (int l=0; l<$size(result); l++) begin
                 if (result_available[l]) begin
-                    $display("bload cast - rstation: %2d, result: %d", l, result[l]);
                     for (int i=0; i<$size(rstation); i++) begin
-                        $display("rstation[%2d].alu1: %d", i, rstation[i].alu1);
-                        $display("rstation[%2d].alu2: %d", i, rstation[i].alu2);
                         if (rstation[i].alu1 == l) begin
-                            $display("written - rst1: %d", result[l]);
                             rstation[i].value1 = result[l];
                             rstation[i].alu1   = 2'b00;
                             rstation[l].busy = 0;
                         end
 
                         if (rstation[i].alu2 == l) begin
-                            $display("written - rst2: %d", result[l]);
                             rstation[i].value2 = result[l];
                             rstation[i].alu2   = 2'b00;
                             rstation[l].busy = 0;
@@ -103,51 +93,47 @@ module CPU(
                 end
             end
 
-            instruction = instCache[pc+consumed_inst];
-            // Resister-Resister Operation
-            if (instruction[op_begin:op_end] == 7'b1100110) begin
-                // ADD, SLT, SLTU
-                $display("!!!!!!!!!!!!!!!!!!!!: %b", instruction[funct3_begin:funct3_end]);
-                if (instruction[funct3_begin:funct3_end] == 3'b000) begin
-                    // ADD
-                    if (instruction[funct7_begin:funct7_end] == 7'b0000000) begin
-                        for (int i=1; i<4; i++) begin
-                            if (!rstation[i].busy) begin
-                                $display("using: %d", i);
-                                // rs1 is available
-                                if (regs[instruction[rs1_begin:rs1_end]].alu == 2'b00) begin
-                                    $display("rs1 is available");
-                                    rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
-                                    rstation[i].alu1   = 2'b00;
-                                end else begin
-                                    $display("rs1 is not available: %d", regs[instruction[rs1_begin:rs1_end]].alu);
-                                    rstation[i].value1 = 32'd0;
-                                    rstation[i].alu1   = regs[instruction[rs1_begin:rs1_end]].alu;
+            for (int l=1; l<$size(rstation); l++) begin
+                instruction = instCache[pc+consumed_inst];
+
+                // Resister-Resister Operation
+                if (instruction[op_begin:op_end] == 7'b1100110) begin
+                    // ADD, SLT, SLTU
+                    if (instruction[funct3_begin:funct3_end] == 3'b000) begin
+                        // ADD
+                        if (instruction[funct7_begin:funct7_end] == 7'b0000000) begin
+                            for (int i=1; i<$size(rstation); i++) begin
+                                if (!rstation[i].busy) begin
+                                    // rs1 is available
+                                    if (regs[instruction[rs1_begin:rs1_end]].alu == 2'b00) begin
+                                        rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
+                                        rstation[i].alu1   = 2'b00;
+                                    end else begin
+                                        rstation[i].value1 = 32'd0;
+                                        rstation[i].alu1   = regs[instruction[rs1_begin:rs1_end]].alu;
+                                    end
+
+                                    // rs2 is available
+                                    if (regs[instruction[rs2_begin:rs2_end]].alu == 2'b00) begin
+                                        rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
+                                        rstation[i].alu2   = 2'b00;
+                                    end else begin
+                                        rstation[i].value2 = 32'd0;
+                                        rstation[i].alu2   = regs[instruction[rs2_begin:rs2_end]].alu;
+                                    end
+
+                                    rstation[i].busy = 1'b1;
+                                    regs[instruction[rd_begin:rd_end]].alu = i;
+                                    consumed_inst = consumed_inst + 1;
+
+                                    break;
                                 end
-
-                                // rs2 is available
-                                if (regs[instruction[rs2_begin:rs2_end]].alu == 2'b00) begin
-                                    $display("rs2 is available");
-                                    rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
-                                    rstation[i].alu2   = 2'b00;
-                                end else begin
-                                    $display("rs2 is not available: %d", regs[instruction[rs2_begin:rs2_end]].alu);
-                                    rstation[i].value2 = 32'd0;
-                                    rstation[i].alu2   = regs[instruction[rs2_begin:rs2_end]].alu;
-                                end
-
-                                rstation[i].busy = 1'b1;
-                                $display("regs[%d].alu", instruction[rd_begin:rd_end]);
-                                regs[instruction[rd_begin:rd_end]].alu = i;
-                                consumed_inst += 1;
-
-                                break;
                             end
                         end
                     end
+                end else if (instruction[op_begin:op_end] == 7'b0000000) begin
+                    consumed_inst = consumed_inst + 1;
                 end
-            end else if (instruction[op_begin:op_end] == 7'b0000000) begin
-                consumed_inst += 1;
             end
 
             pc = pc + consumed_inst;
