@@ -99,34 +99,22 @@ module CPU(
 
                 // Resister-Resister Operation
                 if (instruction[op_begin:op_end] == 7'b1100110) begin
-                    // ADD, SLT, SLTU
+                    // ADD, SUB
                     if (instruction[funct3_begin:funct3_end] == 3'b000) begin
                         // ADD
                         if (instruction[funct7_begin:funct7_end] == 7'b0000000) begin
-                            for (int i=1; i<$size(rstation); i++) begin
+                            for (int i=1; i<=4; i++) begin
                                 if (!rstation[i].busy) begin
-                                    // rs1 is available
-                                    if (regs[instruction[rs1_begin:rs1_end]].alu == 2'b00) begin
-                                        rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
-                                        rstation[i].alu1   = 2'b00;
-                                    end else begin
-                                        rstation[i].value1 = 32'd0;
-                                        rstation[i].alu1   = regs[instruction[rs1_begin:rs1_end]].alu;
-                                    end
-
-                                    // rs2 is available
-                                    if (regs[instruction[rs2_begin:rs2_end]].alu == 2'b00) begin
-                                        rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
-                                        rstation[i].alu2   = 2'b00;
-                                    end else begin
-                                        rstation[i].value2 = 32'd0;
-                                        rstation[i].alu2   = regs[instruction[rs2_begin:rs2_end]].alu;
-                                    end
-
-                                    rstation[i].busy = 1'b1;
-                                    regs[instruction[rd_begin:rd_end]].alu = i;
+                                    send_reservation_station(instruction, i);
                                     consumed_inst = consumed_inst + 1;
-
+                                    break;
+                                end
+                            end
+                        end else if (instruction[funct7_begin:funct7_end] == 7'b0000010) begin
+                            for (int i=5; i<=7; i++) begin
+                                if (!rstation[i].busy) begin
+                                    send_reservation_station(instruction, i);
+                                    consumed_inst = consumed_inst + 1;
                                     break;
                                 end
                             end
@@ -141,10 +129,41 @@ module CPU(
         end
     end
 
+    function void send_reservation_station(inst instruction, byte i);
+        // rs1 is available
+        if (regs[instruction[rs1_begin:rs1_end]].alu == 2'b00) begin
+            rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
+            rstation[i].alu1   = 2'b00;
+        end else begin
+            rstation[i].value1 = 32'd0;
+            rstation[i].alu1   = regs[instruction[rs1_begin:rs1_end]].alu;
+        end
+                                                                            
+        // rs2 is available
+        if (regs[instruction[rs2_begin:rs2_end]].alu == 2'b00) begin
+            rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
+            rstation[i].alu2   = 2'b00;
+        end else begin
+            rstation[i].value2 = 32'd0;
+            rstation[i].alu2   = regs[instruction[rs2_begin:rs2_end]].alu;
+        end
+                                                                            
+        rstation[i].busy = 1'b1;
+        regs[instruction[rd_begin:rd_end]].alu = i;
+    endfunction
+
     genvar i;
     generate 
-        for (i=1; i<$size(rstation); i++) begin
+        for (i=1; i<=4; i++) begin
             Add add_module (
+                .rstation(rstation[i]),
+                .result(result[i]),
+                .result_available(result_available[i]),
+                .*
+            );
+        end
+        for (i=5; i<=7; i++) begin
+            Sub sub_module (
                 .rstation(rstation[i]),
                 .result(result[i]),
                 .result_available(result_available[i]),
@@ -193,6 +212,33 @@ module Add(
             end else begin
                 b_result_available <= 0;
                 b_result           <= 0;
+            end
+        end
+    end
+endmodule
+
+module Sub(
+    input wire                CLOCK_50,
+    input wire                RSTN_N,
+    input ReservationStation  rstation,
+    output logic [31:0]       result,
+    output logic              result_available
+);
+
+    always @(CLOCK_50 or negedge RSTN_N) begin
+        if (!RSTN_N) begin
+            result_available <= 0;
+            result           <= 0;
+        end else if (CLOCK_50) begin
+            result_available <= 0;
+            result           <= 0;
+        end else begin
+            if (rstation.alu1==2'b00 && rstation.alu2==2'b00 && rstation.busy) begin
+                result_available <= 1;
+                result <= rstation.value1 - rstation.value2;
+            end else begin
+                result_available <= 0;
+                result           <= 0;
             end
         end
     end
