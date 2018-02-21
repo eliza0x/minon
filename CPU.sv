@@ -62,9 +62,9 @@ module CPU(
             automatic inst instruction;
             automatic byte consumed_inst = 0;
 
-            // Bload Cast: register file
             for (int l=1; l<$size(result); l++) begin
                 if (result_available[l]) begin
+                    // Bload Cast: register file
                     for (int i=1; i<$size(regs); i++) begin
                         if (regs[i].alu == l) begin
                             regs[i].data     = result[l];
@@ -72,12 +72,7 @@ module CPU(
                             rstation[l].busy = 0;
                         end
                     end
-                end
-            end
-
-            // Bload Cast: reservation station
-            for (int l=0; l<$size(result); l++) begin
-                if (result_available[l]) begin
+                    // Bload Cast: reservation station
                     for (int i=0; i<$size(rstation); i++) begin
                         if (rstation[i].alu1 == l) begin
                             rstation[i].value1 = result[l];
