@@ -182,11 +182,8 @@ module Add(
 
     bit calculated = 0;
 
-    always @(CLOCK_50 or negedge RSTN_N) begin
+    always @(posedge CLOCK_50 or negedge RSTN_N) begin
         if (!RSTN_N) begin
-            result_available <= 0;
-            result           <= 0;
-        end else if (CLOCK_50) begin
             result_available <= 0;
             result           <= 0;
         end else begin
@@ -220,11 +217,8 @@ module Sub(
     output logic              result_available
 );
 
-    always @(CLOCK_50 or negedge RSTN_N) begin
+    always @(posedge CLOCK_50 or negedge RSTN_N) begin
         if (!RSTN_N) begin
-            result_available <= 0;
-            result           <= 0;
-        end else if (CLOCK_50) begin
             result_available <= 0;
             result           <= 0;
         end else begin
