@@ -10,6 +10,7 @@ typedef struct {
     logic         busy;
     logic [31:0]  value1;
     logic [31:0]  value2;
+    logic [2:0]   funct3;
     ALU           alu1;
     ALU           alu2;
 } ReservationStation ;
@@ -23,8 +24,8 @@ module CPU(
     inst instCache[256];
     RegF regs[32];
     inst result[8];
-    bit  result_available[8];
-    ReservationStation rstation[8];
+    bit  result_available[$size(result)];
+    ReservationStation rstation[$size(result)];
     inst pc;
 
     // 初期化
