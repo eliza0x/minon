@@ -2,11 +2,15 @@ typedef logic [31:0] inst;
 typedef byte ALU;
 typedef byte RB;
 
+/*{{{*/
 typedef struct {
-    RB   rbuffer;
-    inst data;
+    RB    rbuffer;
+    logic in_rbuffer;
+    inst  data;
+/*}}}*/
 } RegF;
 
+/*{{{*/
 typedef struct {
     logic         busy;
     logic [31:0]  value1;
@@ -14,8 +18,10 @@ typedef struct {
     logic [2:0]   funct3;
     ALU           alu1;
     ALU           alu2;
+/*}}}*/
 } ReservationStation ;
 
+/*{{{*/
 typedef struct {
     logic         available;
     logic         is_failure;
@@ -25,6 +31,7 @@ typedef struct {
     logic [31:0]  address;
     logic [31:0]  value;
     ALU           alu;
+/*}}}*/
 } ReorderBuffer;
 
 module CPU(
@@ -33,6 +40,7 @@ module CPU(
 );
     `include "src/Parameter.sv"
     
+    /* 変数定義 {{{ */
     inst [1023:0] memory;
     inst instCache[256];
     RegF regs[32];
@@ -44,12 +52,13 @@ module CPU(
     byte commit_pointer;
     byte write_pointer;
     inst pc;
+    /* }}} */
 
-    // 初期化
+    /* 初期化 {{{ */
     initial begin
         for (int i=0; i<32; i++) begin
-            regs[i].rbuffer <= 8'd0;
-            regs[i].data    <= 32'b0;
+            regs[i].in_rbuffer <= 1'd0;
+            regs[i].data       <= 32'b0;
         end
         for (int i=0; i<$size(rstation); i++) begin
             rstation[i].busy   <= 1'b0;
@@ -62,16 +71,18 @@ module CPU(
             rbuffer[i].available  = 1;
             rbuffer[i].is_failure = 0;
         end
-        commit_pointer <= 1;
-        write_pointer  <= 1;
+        commit_pointer <= 0;
+        write_pointer  <= 0;
         pc <= 0;
     end
+    /* }}} */
 
     always @(posedge CLOCK_50 or negedge RSTN_N) begin
         if (!RSTN_N) begin
+            /* RESET {{{ */
             for (int i=0; i<32; i++) begin
-                regs[i].rbuffer <= 0;
-                regs[i].data    <= 32'b0;
+                regs[i].in_rbuffer <= 0;
+                regs[i].data       <= 32'b0;
             end
             for (int i=0; i<$size(rstation); i++) begin
                 rstation[i].busy   <= 1'b0;
@@ -84,52 +95,57 @@ module CPU(
                 rbuffer[i].available = 1;
             end
             pc <= 0;
-            commit_pointer <= 1;
-            write_pointer  <= 1;
+            commit_pointer <= 0;
+            write_pointer  <= 0;
+            /* }}} */
         end else begin
             automatic inst instruction;
             automatic byte consumed_inst = 0;
             automatic bit is_branch_loaded = 0;
             automatic bit is_rbuffer_clear = 0;
 
-            // Reorder Buffer: write
+            // Reorder Buffer: commit {{{
             for (int i=0; i<32;i++) begin
                 if ( rbuffer[commit_pointer].available  == 0
                   && rbuffer[commit_pointer].alu        == 0 ) begin
+                    $display("commitable");
                     // Reorder Buffer -> branch failure
                     if ( !is_rbuffer_clear 
                       && rbuffer[commit_pointer].is_branch 
                       && rbuffer[commit_pointer].is_failure) begin
-                        is_rbuffer_clear = 1;
+                        // is_rbuffer_clear: rbufferのフラッシュ
+                        for (int i=0; i<$size(rbuffer); i++) begin
+                            rbuffer[i].available = 1;
+                        end
+                        // is_rbuffer_clear: regfileのコミット予約をフラッシュ
+                        for (int i=0; i<$size(rbuffer); i++) begin
+                            regs[i].in_rbuffer = 1'b0;
+                        end
+                        
+                        commit_pointer = write_pointer;
                     end else if (!is_rbuffer_clear && !rbuffer[commit_pointer].is_store) begin
                     // Reorder Buffer -> register file
                         $display("regs[%2d]  <- %0d",rbuffer[commit_pointer].reg_num, rbuffer[commit_pointer].value); 
                         regs[rbuffer[commit_pointer].reg_num].data = rbuffer[commit_pointer].value;
 
-                        // ここでWARしてる
-                        if (regs[rbuffer[commit_pointer].reg_num].rbuffer == commit_pointer)
-                            regs[rbuffer[commit_pointer].reg_num].rbuffer = 0;
+                        if ( regs[rbuffer[commit_pointer].reg_num].in_rbuffer == 1'b1
+                          && regs[rbuffer[commit_pointer].reg_num].rbuffer    == commit_pointer) begin
+                            regs[rbuffer[commit_pointer].reg_num].in_rbuffer = 0;
+                        end
+                        
+                        rbuffer[commit_pointer].available = 1;
+                        commit_pointer = commit_pointer + 1;
                     end else if (!is_rbuffer_clear && rbuffer[commit_pointer].is_store) begin
                     // Reorder Buffer -> memory
                         memory[rbuffer[commit_pointer].address] = rbuffer[commit_pointer].value;
+                        rbuffer[commit_pointer].available = 1;
+                        commit_pointer = commit_pointer + 1;
                     end
-                    rbuffer[commit_pointer].available = 1;
-                    commit_pointer = commit_pointer + 1;
                 end else begin
                     break;
                 end
             end
-
-            if (is_rbuffer_clear) begin
-                // is_rbuffer_clear: rbufferのフラッシュ
-                for (int i=0; i<$size(rbuffer); i++) begin
-                    rbuffer[i].available = 1;
-                end
-                // is_rbuffer_clear: regfileのコミット予約をフラッシュ
-                for (int i=0; i<$size(rbuffer); i++) begin
-                    regs[i].rbuffer = 0;
-                end
-            end
+            // }}}
 
             for (int l=1; l<$size(result); l++) begin
                 if (result_available[l]) begin
@@ -205,8 +221,7 @@ module CPU(
 
     function void send_reservation_station(inst instruction, byte write_pointer, byte i);
         // rs1 is available
-        // $display("regs[rs1].rbuffer: %d", regs[instruction[rs1_begin:rs1_end]].rbuffer);
-        if (regs[instruction[rs1_begin:rs1_end]].rbuffer == 8'h00) begin
+        if (regs[instruction[rs1_begin:rs1_end]].in_rbuffer == 1'b0) begin
             rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
             rstation[i].alu1   = 8'd0;
         end else begin
@@ -220,8 +235,7 @@ module CPU(
         end
                                                                  
         // rs2 is available
-        // $display("regs[rs2].rbuffer: %d", regs[instruction[rs2_begin:rs2_end]].rbuffer);
-        if (regs[instruction[rs2_begin:rs2_end]].rbuffer == 8'h00) begin
+        if (regs[instruction[rs2_begin:rs2_end]].in_rbuffer == 1'b0) begin
             rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
             rstation[i].alu2   = 8'd0;
         end else begin
@@ -234,12 +248,13 @@ module CPU(
             end
         end
 
-        rstation[i].busy                           = 1'b1;
-        rbuffer[write_pointer].alu         = i;
-        rbuffer[write_pointer].reg_num     = instruction[rd_begin:rd_end];
-        regs[instruction[rd_begin:rd_end]].rbuffer = write_pointer;
-        rbuffer[write_pointer].available   = 0;
-        rbuffer[write_pointer].is_store    = 0;
+        rstation[i].busy                 = 1'b1;
+        rbuffer[write_pointer].alu       = i;
+        rbuffer[write_pointer].reg_num   = instruction[rd_begin:rd_end];
+        rbuffer[write_pointer].available = 0;
+        rbuffer[write_pointer].is_store  = 0;
+        regs[instruction[rd_begin:rd_end]].rbuffer    = write_pointer;
+        regs[instruction[rd_begin:rd_end]].in_rbuffer = 1'b1;
     endfunction
 
     genvar i;
