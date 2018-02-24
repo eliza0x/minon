@@ -42,7 +42,7 @@ module CPU(
     ReservationStation rstation[$size(result)];
     ReorderBuffer rbuffer[32];
     byte commit_pointer;
-    byte rbuffer_write_pointer;
+    byte write_pointer;
     inst pc;
 
     // 初期化
@@ -63,7 +63,7 @@ module CPU(
             rbuffer[i].is_failure = 0;
         end
         commit_pointer <= 1;
-        rbuffer_write_pointer  <= 1;
+        write_pointer  <= 1;
         pc <= 0;
     end
 
@@ -85,7 +85,7 @@ module CPU(
             end
             pc <= 0;
             commit_pointer <= 1;
-            rbuffer_write_pointer  <= 1;
+            write_pointer  <= 1;
         end else begin
             automatic inst instruction;
             automatic byte consumed_inst = 0;
@@ -104,9 +104,11 @@ module CPU(
                     end else if (!is_rbuffer_clear && !rbuffer[commit_pointer].is_store) begin
                     // Reorder Buffer -> register file
                         $display("regs[%2d]  <- %0d",rbuffer[commit_pointer].reg_num, rbuffer[commit_pointer].value); 
-                        regs[rbuffer[commit_pointer].reg_num].data 
-                            = rbuffer[commit_pointer].value;
-                        regs[rbuffer[commit_pointer].reg_num].rbuffer = 0;
+                        regs[rbuffer[commit_pointer].reg_num].data = rbuffer[commit_pointer].value;
+
+                        // ここでWARしてる
+                        if (regs[rbuffer[commit_pointer].reg_num].rbuffer == commit_pointer)
+                            regs[rbuffer[commit_pointer].reg_num].rbuffer = 0;
                     end else if (!is_rbuffer_clear && rbuffer[commit_pointer].is_store) begin
                     // Reorder Buffer -> memory
                         memory[rbuffer[commit_pointer].address] = rbuffer[commit_pointer].value;
@@ -160,12 +162,11 @@ module CPU(
                 end
             end
 
-            // for (int l=1; l<$size(rstation); l++) begin
-            for (int l=1; l<2; l++) begin
+            for (int l=1; l<$size(rstation); l++) begin
                 if (!is_branch_loaded) begin
                     instruction = instCache[pc+consumed_inst];
 
-                    if (rbuffer[rbuffer_write_pointer].available) begin
+                    if (rbuffer[write_pointer].available) begin
                         // Resister-Resister Operation
                         if (instruction[op_begin:op_end] == 7'b1100110) begin
                             // ADD, SUB
@@ -174,8 +175,9 @@ module CPU(
                                 if (instruction[funct7_begin:funct7_end] == 7'b0000000) begin
                                     for (int i=1; i<=4; i++) begin
                                         if (!rstation[i].busy) begin
-                                            send_reservation_station(instruction, rbuffer_write_pointer, i);
-                                            rbuffer_write_pointer = rbuffer_write_pointer + 1;
+                                            $display("i: %d", i);
+                                            send_reservation_station(instruction, write_pointer, i);
+                                            write_pointer = write_pointer + 1;
                                             consumed_inst = consumed_inst + 1;
                                             break;
                                         end
@@ -183,8 +185,8 @@ module CPU(
                                 end else if (instruction[funct7_begin:funct7_end] == 7'b0000010) begin
                                     for (int i=5; i<=7; i++) begin
                                         if (!rstation[i].busy) begin
-                                            send_reservation_station(instruction, rbuffer_write_pointer, i);
-                                            rbuffer_write_pointer = rbuffer_write_pointer + 1;
+                                            send_reservation_station(instruction, write_pointer, i);
+                                            write_pointer = write_pointer + 1;
                                             consumed_inst = consumed_inst + 1;
                                             break;
                                         end
@@ -201,9 +203,9 @@ module CPU(
         end
     end
 
-    function void send_reservation_station(inst instruction, byte rbuffer_write_pointer, byte i);
+    function void send_reservation_station(inst instruction, byte write_pointer, byte i);
         // rs1 is available
-        $display("regs[rs1].rbuffer: %d", regs[instruction[rs1_begin:rs1_end]].rbuffer);
+        // $display("regs[rs1].rbuffer: %d", regs[instruction[rs1_begin:rs1_end]].rbuffer);
         if (regs[instruction[rs1_begin:rs1_end]].rbuffer == 8'h00) begin
             rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
             rstation[i].alu1   = 8'd0;
@@ -218,7 +220,7 @@ module CPU(
         end
                                                                  
         // rs2 is available
-        $display("regs[rs2].rbuffer: %d", regs[instruction[rs2_begin:rs2_end]].rbuffer);
+        // $display("regs[rs2].rbuffer: %d", regs[instruction[rs2_begin:rs2_end]].rbuffer);
         if (regs[instruction[rs2_begin:rs2_end]].rbuffer == 8'h00) begin
             rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
             rstation[i].alu2   = 8'd0;
@@ -232,13 +234,12 @@ module CPU(
             end
         end
 
-        $display("rbuffer_write_pointer: %d", rbuffer_write_pointer);
         rstation[i].busy                           = 1'b1;
-        rbuffer[rbuffer_write_pointer].alu         = i;
-        rbuffer[rbuffer_write_pointer].reg_num     = instruction[rd_begin:rd_end];
-        regs[instruction[rd_begin:rd_end]].rbuffer = rbuffer_write_pointer;
-        rbuffer[rbuffer_write_pointer].available   = 0;
-        rbuffer[rbuffer_write_pointer].is_store    = 0;
+        rbuffer[write_pointer].alu         = i;
+        rbuffer[write_pointer].reg_num     = instruction[rd_begin:rd_end];
+        regs[instruction[rd_begin:rd_end]].rbuffer = write_pointer;
+        rbuffer[write_pointer].available   = 0;
+        rbuffer[write_pointer].is_store    = 0;
     endfunction
 
     genvar i;
