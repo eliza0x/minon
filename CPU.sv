@@ -19,16 +19,14 @@ module CPU(
     bit  result_available[$size(result)];
     ReservationStation rstation[$size(result)];
     ReorderBuffer rbuffer[32];
-    byte commit_pointer;
-    byte write_pointer;
-    inst pc;
-    /* }}} */
+    int  clk_cnt = 0;
 
     initial initialize();
 
     assign clk = CLOCK_50 & is_halt_N;
 
     always @(posedge clk or negedge RSTN_N) begin
+        clk_cnt = clk_cnt + 1;
         if (!RSTN_N) begin
             initialize();
         end else begin
