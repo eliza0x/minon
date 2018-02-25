@@ -2,6 +2,8 @@
 `else
 `define PARAMETER_IS_LOADED
 
+`include "./Parameter/Opecode.sv"
+
 parameter op_begin = 31;
 parameter op_end   = 25;
 

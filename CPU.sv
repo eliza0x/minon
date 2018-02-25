@@ -1,44 +1,10 @@
-typedef logic [31:0] inst;
-typedef byte ALU;
-typedef byte RB;
-
-/*{{{*/
-typedef struct {
-    RB    rbuffer;
-    logic in_rbuffer;
-    inst  data;
-/*}}}*/
-} RegF;
-
-/*{{{*/
-typedef struct {
-    logic         busy;
-    logic [31:0]  value1;
-    logic [31:0]  value2;
-    logic [2:0]   funct3;
-    ALU           alu1;
-    ALU           alu2;
-/*}}}*/
-} ReservationStation ;
-
-/*{{{*/
-typedef struct {
-    logic         available;
-    logic         is_failure;
-    logic         is_store;
-    logic         is_branch;
-    logic [5:0]   reg_num;
-    logic [31:0]  address;
-    logic [31:0]  value;
-    ALU           alu;
-/*}}}*/
-} ReorderBuffer;
+`include "./src/Utility.sv"
 
 module CPU(
     input wire CLOCK_50,
     input wire RSTN_N
 );
-    `include "src/Parameter.sv"
+    `include "./src/Parameter.sv"
     
     /* 変数定義 {{{ */
     inst [1023:0] memory;
