@@ -26,15 +26,13 @@ module CPU(
 
     assign clk = CLOCK_50 & is_halt_N;
 
+    // [設計] 
+    // ROBから確定したものをコミット
     always @(posedge clk or negedge RSTN_N) begin
         clk_cnt = clk_cnt + 1;
         if (!RSTN_N) begin
             initialize();
         end else begin
-            automatic inst instruction;
-            automatic byte rstation_num;
-            automatic byte consumed_inst = 0;
-
             // Reorder Buffer: commit
             for (int i=0; i<32;i++) begin
                 `define rc rbuffer[commit_index]
@@ -75,72 +73,82 @@ module CPU(
                 end
                 `undef rc
             end
+        end
+    end
 
-            for (int l=1; l<$size(result); l++) begin
-                if (result_available[l]) begin
-                    // Bload Cast: reorder buffer
-                    for (int i=0; i<$size(rbuffer); i++) begin
-                        if (rbuffer[i].alu == l) begin
-                            $display("reseive[%0d]: %0d", i ,result[l]); 
-                            rbuffer[i].value <= result[l];
-                            rbuffer[i].alu   <= 8'h00;
-                            if (rbuffer[i].is_branch)
-                                rbuffer[i].is_failure <= result_branch[l];
-                        end
+    // [設計] 
+    // Bload Castを受信してリザベーションステーションとROBに書き込む
+    always @(posedge clk) begin
+        for (int l=1; l<$size(result); l++) begin
+            if (result_available[l]) begin
+                // Bload Cast: reorder buffer
+                for (int i=0; i<$size(rbuffer); i++) begin
+                    if (rbuffer[i].alu == l) begin
+                        $display("reseive[%0d]: %0d", i ,result[l]); 
+                        rbuffer[i].value <= result[l];
+                        rbuffer[i].alu   <= 8'h00;
+                        if (rbuffer[i].is_branch)
+                            rbuffer[i].is_failure <= result_branch[l];
                     end
+                end
 
-                    // Bload Cast: reservation station
-                    for (int i=0; i<$size(rstation); i++) begin
-                        if (rstation[i].alu1 == l) begin
-                            rstation[i].value1 <= result[l];
-                            rstation[i].alu1   <= 8'd0;
-                            rstation[l].busy   <= 0;
-                        end
-                        if (rstation[i].alu2 == l) begin
-                            rstation[i].value2 <= result[l];
-                            rstation[i].alu2   <= 8'd0;
-                            rstation[l].busy   <= 0;
-                        end
+                // Bload Cast: reservation station
+                for (int i=0; i<$size(rstation); i++) begin
+                    if (rstation[i].alu1 == l) begin
+                        rstation[i].value1 <= result[l];
+                        rstation[i].alu1   <= 8'd0;
+                        rstation[l].busy   <= 0;
+                    end
+                    if (rstation[i].alu2 == l) begin
+                        rstation[i].value2 <= result[l];
+                        rstation[i].alu2   <= 8'd0;
+                        rstation[l].busy   <= 0;
                     end
                 end
             end
+        end
+    end
 
-            for (int l=1; l<$size(rstation); l++) begin
-                instruction = instCache[pc+consumed_inst];
-                if (rbuffer[write_index].available) begin
-                    if (instruction[op_begin:op_end] == op_resister_resister) begin
-                        if (instruction[funct3_begin:funct3_end] == funct3_add_sub) begin
-                            if (instruction[funct7_begin:funct7_end] == funct7_add) begin
-                                rstation_num = search_available_rstation(1, 4);
-                                if (rstation_num != 0) begin
-                                    send_reservation_station_arith(instruction, rstation_num);
-                                    write_index   = write_index + 1;
-                                    consumed_inst = consumed_inst + 1;
-                                end
-                            end else if (instruction[funct7_begin:funct7_end] == funct7_sub) begin
-                                rstation_num = search_available_rstation(5, 7);
-                                if (rstation_num != 0) begin
-                                    send_reservation_station_arith(instruction, rstation_num);
-                                    write_index   = write_index + 1;
-                                    consumed_inst = consumed_inst + 1;
-                                end
+    always @(posedge clk) begin
+        automatic inst instruction;
+        automatic byte rstation_num;
+        automatic byte consumed_inst = 0;
+        // [設計]
+        // Decode
+        for (int l=1; l<$size(rstation); l++) begin
+            instruction = instCache[pc+consumed_inst];
+            if (rbuffer[write_index].available) begin
+                if (instruction[op_begin:op_end] == op_resister_resister) begin
+                    if (instruction[funct3_begin:funct3_end] == funct3_add_sub) begin
+                        if (instruction[funct7_begin:funct7_end] == funct7_add) begin
+                            rstation_num = search_available_rstation(1, 4);
+                            if (rstation_num != 0) begin
+                                send_reservation_station_arith(instruction, rstation_num);
+                                write_index   = write_index + 1;
+                                consumed_inst = consumed_inst + 1;
+                            end
+                        end else if (instruction[funct7_begin:funct7_end] == funct7_sub) begin
+                            rstation_num = search_available_rstation(5, 7);
+                            if (rstation_num != 0) begin
+                                send_reservation_station_arith(instruction, rstation_num);
+                                write_index   = write_index + 1;
+                                consumed_inst = consumed_inst + 1;
                             end
                         end
-                    end else if (instruction[op_begin:op_end] == op_nop) begin
+                    end
+                end else if (instruction[op_begin:op_end] == op_nop) begin
+                    consumed_inst = consumed_inst + 1;
+                end else if (instruction[op_begin:op_end] == op_halt) begin
+                    rstation_num = search_available_rstation(8, 8);
+                    if (rstation_num != 0) begin
+                        send_reservation_station_halt(rstation_num);
                         consumed_inst = consumed_inst + 1;
-                    end else if (instruction[op_begin:op_end] == op_halt) begin
-                        rstation_num = search_available_rstation(8, 8);
-                        if (rstation_num != 0) begin
-                            send_reservation_station_halt(rstation_num);
-                            consumed_inst = consumed_inst + 1;
-                            write_index   = write_index + 1;
-                        end
+                        write_index   = write_index + 1;
                     end
                 end
-                
             end
-            pc = pc + consumed_inst;
         end
+        pc = pc + consumed_inst;
     end
 
     function void initialize(); // {{{
@@ -221,6 +229,16 @@ endfunction // }}}
         rbuffer[write_index].is_resister  = 1'b0;
         rbuffer[write_index].is_store     = 1'b0;
         rbuffer[write_index].is_halt      = 1'b1;
+    endfunction // }}}
+
+    function void send_reservation_station_nop(byte i); // {{{
+        rstation[i].busy                  = 1'b1;
+        rbuffer[write_index].alu          = 0;
+        rbuffer[write_index].reg_num      = 0;
+        rbuffer[write_index].available    = 0;
+        rbuffer[write_index].is_resister  = 1'b0;
+        rbuffer[write_index].is_store     = 1'b0;
+        rbuffer[write_index].is_halt      = 1'b0;
     endfunction // }}}
 
     genvar i;
