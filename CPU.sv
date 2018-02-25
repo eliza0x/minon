@@ -45,7 +45,7 @@ module CPU(
                         for (int i=0; i<$size(rbuffer); i++) rbuffer[i].available = 1;
                         for (int i=0; i<$size(rbuffer); i++) regs[i].in_rbuffer   = 1'b0;
                         commit_index = write_index;
-                    end else if (!`rc.is_store && !`rc.is_halt) begin
+                    end else if (`rc.is_resister) begin
                         // [設計]
                         // リオーダバッファからレジスタへの書き込み
                         $display("regs[%0d]  <- %0d",`rc.reg_num, `rc.value); 
@@ -202,23 +202,25 @@ endfunction // }}}
             end
         end
 
-        rstation[i].busy               = 1'b1;
-        rbuffer[write_index].alu       = i;
-        rbuffer[write_index].reg_num   = instruction[rd_begin:rd_end];
-        rbuffer[write_index].available = 1'b0;
-        rbuffer[write_index].is_store  = 1'b0;
-        rbuffer[write_index].is_halt   = 1'b0;
+        rstation[i].busy                 = 1'b1;
+        rbuffer[write_index].alu         = i;
+        rbuffer[write_index].reg_num     = instruction[rd_begin:rd_end];
+        rbuffer[write_index].available   = 1'b0;
+        rbuffer[write_index].is_store    = 1'b0;
+        rbuffer[write_index].is_halt     = 1'b0;
+        rbuffer[write_index].is_resister = 1'b1;
         regs[instruction[rd_begin:rd_end]].rbuffer    = write_index;
         regs[instruction[rd_begin:rd_end]].in_rbuffer = 1'b1;
     endfunction // }}}
 
     function void send_reservation_station_halt(byte i); // {{{
-        rstation[i].busy               = 1'b1;
-        rbuffer[write_index].alu       = 0;
-        rbuffer[write_index].reg_num   = 0;
-        rbuffer[write_index].available = 0;
-        rbuffer[write_index].is_store  = 0;
-        rbuffer[write_index].is_halt   = 1'b1;
+        rstation[i].busy                  = 1'b1;
+        rbuffer[write_index].alu          = 0;
+        rbuffer[write_index].reg_num      = 0;
+        rbuffer[write_index].available    = 0;
+        rbuffer[write_index].is_resister  = 1'b0;
+        rbuffer[write_index].is_store     = 1'b0;
+        rbuffer[write_index].is_halt      = 1'b1;
     endfunction // }}}
 
     genvar i;

@@ -27,6 +27,7 @@ typedef struct {
     logic         is_store;
     logic         is_branch;
     logic         is_halt;
+    logic         is_resister;
     logic [5:0]   reg_num;
     logic [31:0]  address;
     logic [31:0]  value;
