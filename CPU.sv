@@ -6,12 +6,16 @@ module CPU(
 );
     `include "./src/Parameter.sv"
     
-    /* 変数定義 {{{ */
-    inst [1023:0] memory;
+    bit  clk;
     inst instCache[256];
     RegF regs[32];
-    inst result[8];
+    byte commit_index;
+    byte write_index;
+    inst pc;
+    bit  is_halt_N;
+    inst memory[1024];
     inst result_branch[8];
+    inst result[16];
     bit  result_available[$size(result)];
     ReservationStation rstation[$size(result)];
     ReorderBuffer rbuffer[32];
@@ -20,8 +24,128 @@ module CPU(
     inst pc;
     /* }}} */
 
-    /* 初期化 {{{ */
-    initial begin
+    initial initialize();
+
+    assign clk = CLOCK_50 & is_halt_N;
+
+    always @(posedge clk or negedge RSTN_N) begin
+        if (!RSTN_N) begin
+            initialize();
+        end else begin
+            automatic inst instruction;
+            automatic byte rstation_num;
+            automatic byte consumed_inst = 0;
+
+            // Reorder Buffer: commit
+            for (int i=0; i<32;i++) begin
+                `define rc rbuffer[commit_index]
+                if (`rc.available == 0 && `rc.alu == 0) begin
+                    if (`rc.is_branch && `rc.is_failure) begin
+                        // [設計]
+                        // 分岐予測に失敗したら投機的に実行した部分を捨てる
+                        for (int i=0; i<$size(rbuffer); i++) rbuffer[i].available = 1;
+                        for (int i=0; i<$size(rbuffer); i++) regs[i].in_rbuffer   = 1'b0;
+                        commit_index = write_index;
+                    end else if (!`rc.is_store && !`rc.is_halt) begin
+                        // [設計]
+                        // リオーダバッファからレジスタへの書き込み
+                        $display("regs[%0d]  <- %0d",`rc.reg_num, `rc.value); 
+                        regs[`rc.reg_num].data = `rc.value;
+
+                        // レジスタの指すrbufferの番号が今のcommit_indexであれば書き込む
+                        // そうでなければ後続の命令が書き込むのでスルー
+                        // (Resister Renaming)
+                        if ( regs[`rc.reg_num].in_rbuffer == 1'b1 
+                          && regs[`rc.reg_num].rbuffer == commit_index) begin
+                            regs[`rc.reg_num].in_rbuffer = 0;
+                        end
+                        `rc.available = 1;
+                        commit_index = commit_index + 1;
+                    end else if (`rc.is_store) begin
+                        // [設計]
+                        // メモリ操作キューに追加(未実装)
+                        memory[`rc.address] = `rc.value;
+                        `rc.available = 1;
+                        commit_index = commit_index + 1;
+                    end else if (`rc.is_halt) begin
+                        is_halt_N = 0;
+                        commit_index = commit_index + 1;
+                    end
+                end else begin
+                    break;
+                end
+                `undef rc
+            end
+
+            for (int l=1; l<$size(result); l++) begin
+                if (result_available[l]) begin
+                    // Bload Cast: reorder buffer
+                    for (int i=0; i<$size(rbuffer); i++) begin
+                        if (rbuffer[i].alu == l) begin
+                            $display("reseive[%0d]: %0d", i ,result[l]); 
+                            rbuffer[i].value <= result[l];
+                            rbuffer[i].alu   <= 8'h00;
+                            if (rbuffer[i].is_branch)
+                                rbuffer[i].is_failure <= result_branch[l];
+                        end
+                    end
+
+                    // Bload Cast: reservation station
+                    for (int i=0; i<$size(rstation); i++) begin
+                        if (rstation[i].alu1 == l) begin
+                            rstation[i].value1 <= result[l];
+                            rstation[i].alu1   <= 8'd0;
+                            rstation[l].busy   <= 0;
+                        end
+                        if (rstation[i].alu2 == l) begin
+                            rstation[i].value2 <= result[l];
+                            rstation[i].alu2   <= 8'd0;
+                            rstation[l].busy   <= 0;
+                        end
+                    end
+                end
+            end
+
+            for (int l=1; l<$size(rstation); l++) begin
+                instruction = instCache[pc+consumed_inst];
+                if (rbuffer[write_index].available) begin
+                    if (instruction[op_begin:op_end] == op_resister_resister) begin
+                        if (instruction[funct3_begin:funct3_end] == funct3_add_sub) begin
+                            if (instruction[funct7_begin:funct7_end] == funct7_add) begin
+                                rstation_num = search_available_rstation(1, 4);
+                                if (rstation_num != 0) begin
+                                    send_reservation_station_arith(instruction, rstation_num);
+                                    write_index   = write_index + 1;
+                                    consumed_inst = consumed_inst + 1;
+                                end
+                            end else if (instruction[funct7_begin:funct7_end] == funct7_sub) begin
+                                rstation_num = search_available_rstation(5, 7);
+                                if (rstation_num != 0) begin
+                                    send_reservation_station_arith(instruction, rstation_num);
+                                    write_index   = write_index + 1;
+                                    consumed_inst = consumed_inst + 1;
+                                end
+                            end
+                        end
+                    end else if (instruction[op_begin:op_end] == op_nop) begin
+                        consumed_inst = consumed_inst + 1;
+                    end else if (instruction[op_begin:op_end] == op_halt) begin
+                        rstation_num = search_available_rstation(8, 8);
+                        if (rstation_num != 0) begin
+                            send_reservation_station_halt(rstation_num);
+                            consumed_inst = consumed_inst + 1;
+                            write_index   = write_index + 1;
+                        end
+                    end
+                end
+                
+            end
+            pc = pc + consumed_inst;
+        end
+    end
+
+    function void initialize(); // {{{
+        clk_cnt <= 0;
         for (int i=0; i<32; i++) begin
             regs[i].in_rbuffer <= 1'd0;
             regs[i].data       <= 32'b0;
@@ -37,155 +161,20 @@ module CPU(
             rbuffer[i].available  = 1;
             rbuffer[i].is_failure = 0;
         end
-        commit_pointer <= 0;
-        write_pointer  <= 0;
+        commit_index <= 0;
+        write_index  <= 0;
         pc <= 0;
-    end
-    /* }}} */
+        is_halt_N <= 1;
+    endfunction /// }}}
 
-    always @(posedge CLOCK_50 or negedge RSTN_N) begin
-        if (!RSTN_N) begin
-            /* RESET {{{ */
-            for (int i=0; i<32; i++) begin
-                regs[i].in_rbuffer <= 0;
-                regs[i].data       <= 32'b0;
-            end
-            for (int i=0; i<$size(rstation); i++) begin
-                rstation[i].busy   <= 1'b0;
-                rstation[i].alu1   <= 2'b00;
-                rstation[i].alu2   <= 2'b00;
-                rstation[i].value1 <= 32'd0;
-                rstation[i].value2 <= 32'd0;
-            end
-            for (int i=0; i<$size(rbuffer); i++) begin
-                rbuffer[i].available = 1;
-            end
-            pc <= 0;
-            commit_pointer <= 0;
-            write_pointer  <= 0;
-            /* }}} */
-        end else begin
-            automatic inst instruction;
-            automatic byte consumed_inst = 0;
-            automatic bit is_branch_loaded = 0;
-            automatic bit is_rbuffer_clear = 0;
+function byte search_available_rstation(byte s, byte l); // {{{
+    for (int i=s; i<=l; i++)
+        if (!rstation[i].busy)
+            return i;
+    return 0;
+endfunction // }}}
 
-            // Reorder Buffer: commit {{{
-            for (int i=0; i<32;i++) begin
-                if ( rbuffer[commit_pointer].available  == 0
-                  && rbuffer[commit_pointer].alu        == 0 ) begin
-                    $display("commitable");
-                    // Reorder Buffer -> branch failure
-                    if ( !is_rbuffer_clear 
-                      && rbuffer[commit_pointer].is_branch 
-                      && rbuffer[commit_pointer].is_failure) begin
-                        // is_rbuffer_clear: rbufferのフラッシュ
-                        for (int i=0; i<$size(rbuffer); i++) begin
-                            rbuffer[i].available = 1;
-                        end
-                        // is_rbuffer_clear: regfileのコミット予約をフラッシュ
-                        for (int i=0; i<$size(rbuffer); i++) begin
-                            regs[i].in_rbuffer = 1'b0;
-                        end
-                        
-                        commit_pointer = write_pointer;
-                    end else if (!is_rbuffer_clear && !rbuffer[commit_pointer].is_store) begin
-                    // Reorder Buffer -> register file
-                        $display("regs[%2d]  <- %0d",rbuffer[commit_pointer].reg_num, rbuffer[commit_pointer].value); 
-                        regs[rbuffer[commit_pointer].reg_num].data = rbuffer[commit_pointer].value;
-
-                        if ( regs[rbuffer[commit_pointer].reg_num].in_rbuffer == 1'b1
-                          && regs[rbuffer[commit_pointer].reg_num].rbuffer    == commit_pointer) begin
-                            regs[rbuffer[commit_pointer].reg_num].in_rbuffer = 0;
-                        end
-                        
-                        rbuffer[commit_pointer].available = 1;
-                        commit_pointer = commit_pointer + 1;
-                    end else if (!is_rbuffer_clear && rbuffer[commit_pointer].is_store) begin
-                    // Reorder Buffer -> memory
-                        memory[rbuffer[commit_pointer].address] = rbuffer[commit_pointer].value;
-                        rbuffer[commit_pointer].available = 1;
-                        commit_pointer = commit_pointer + 1;
-                    end
-                end else begin
-                    break;
-                end
-            end
-            // }}}
-
-            for (int l=1; l<$size(result); l++) begin
-                if (result_available[l]) begin
-                    // Bload Cast: reorder buffer
-                    for (int i=0; i<$size(rbuffer); i++) begin
-                        if (rbuffer[i].alu == l) begin
-                            $display("buffer reseive[%2d]: %0d", i ,result[l]); 
-                            rbuffer[i].value = result[l];
-                            rbuffer[i].alu   = 8'h00;
-                            if (rbuffer[i].is_branch) begin
-                                rbuffer[i].is_failure = result_branch[l];
-                            end
-                        end
-                    end
-
-                    // Bload Cast: reservation station
-                    for (int i=0; i<$size(rstation); i++) begin
-                        if (rstation[i].alu1 == l) begin
-                            rstation[i].value1 <= result[l];
-                            rstation[i].alu1   <= 8'd0;
-                            rstation[l].busy   <= 0;
-                        end
-
-                        if (rstation[i].alu2 == l) begin
-                            rstation[i].value2 <= result[l];
-                            rstation[i].alu2   <= 8'd0;
-                            rstation[l].busy   <= 0;
-                        end
-                    end
-                end
-            end
-
-            for (int l=1; l<$size(rstation); l++) begin
-                if (!is_branch_loaded) begin
-                    instruction = instCache[pc+consumed_inst];
-
-                    if (rbuffer[write_pointer].available) begin
-                        // Resister-Resister Operation
-                        if (instruction[op_begin:op_end] == 7'b1100110) begin
-                            // ADD, SUB
-                            if (instruction[funct3_begin:funct3_end] == 3'b000) begin
-                                // ADD
-                                if (instruction[funct7_begin:funct7_end] == 7'b0000000) begin
-                                    for (int i=1; i<=4; i++) begin
-                                        if (!rstation[i].busy) begin
-                                            $display("i: %d", i);
-                                            send_reservation_station(instruction, write_pointer, i);
-                                            write_pointer = write_pointer + 1;
-                                            consumed_inst = consumed_inst + 1;
-                                            break;
-                                        end
-                                    end
-                                end else if (instruction[funct7_begin:funct7_end] == 7'b0000010) begin
-                                    for (int i=5; i<=7; i++) begin
-                                        if (!rstation[i].busy) begin
-                                            send_reservation_station(instruction, write_pointer, i);
-                                            write_pointer = write_pointer + 1;
-                                            consumed_inst = consumed_inst + 1;
-                                            break;
-                                        end
-                                    end
-                                end
-                            end
-                        end else if (instruction[op_begin:op_end] == 7'b0000000) begin
-                            consumed_inst = consumed_inst + 1;
-                        end
-                    end
-                end
-            end
-            pc = pc + consumed_inst;
-        end
-    end
-
-    function void send_reservation_station(inst instruction, byte write_pointer, byte i);
+    function void send_reservation_station_arith(inst instruction, byte i); // {{{
         // rs1 is available
         if (regs[instruction[rs1_begin:rs1_end]].in_rbuffer == 1'b0) begin
             rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
@@ -214,14 +203,24 @@ module CPU(
             end
         end
 
-        rstation[i].busy                 = 1'b1;
-        rbuffer[write_pointer].alu       = i;
-        rbuffer[write_pointer].reg_num   = instruction[rd_begin:rd_end];
-        rbuffer[write_pointer].available = 0;
-        rbuffer[write_pointer].is_store  = 0;
-        regs[instruction[rd_begin:rd_end]].rbuffer    = write_pointer;
+        rstation[i].busy               = 1'b1;
+        rbuffer[write_index].alu       = i;
+        rbuffer[write_index].reg_num   = instruction[rd_begin:rd_end];
+        rbuffer[write_index].available = 1'b0;
+        rbuffer[write_index].is_store  = 1'b0;
+        rbuffer[write_index].is_halt   = 1'b0;
+        regs[instruction[rd_begin:rd_end]].rbuffer    = write_index;
         regs[instruction[rd_begin:rd_end]].in_rbuffer = 1'b1;
-    endfunction
+    endfunction // }}}
+
+    function void send_reservation_station_halt(byte i); // {{{
+        rstation[i].busy               = 1'b1;
+        rbuffer[write_index].alu       = 0;
+        rbuffer[write_index].reg_num   = 0;
+        rbuffer[write_index].available = 0;
+        rbuffer[write_index].is_store  = 0;
+        rbuffer[write_index].is_halt   = 1'b1;
+    endfunction // }}}
 
     genvar i;
     generate
@@ -246,7 +245,7 @@ endmodule
 
 // 実験の為に1クロック遅延を発生させている
 module Add(
-    input wire                CLOCK_50,
+    input wire                clk,
     input wire                RSTN_N,
     input ReservationStation  rstation,
     output logic [31:0]       result,
@@ -258,7 +257,7 @@ module Add(
 
     bit calculated = 0;
 
-    always @(posedge CLOCK_50 or negedge RSTN_N) begin
+    always @(posedge clk or negedge RSTN_N) begin
         if (!RSTN_N) begin
             result_available <= 0;
             result           <= 0;
@@ -286,14 +285,14 @@ module Add(
 endmodule
 
 module Sub(
-    input wire                CLOCK_50,
+    input wire                clk,
     input wire                RSTN_N,
     input ReservationStation  rstation,
     output logic [31:0]       result,
     output logic              result_available
 );
 
-    always @(posedge CLOCK_50 or negedge RSTN_N) begin
+    always @(posedge clk or negedge RSTN_N) begin
         if (!RSTN_N) begin
             result_available <= 0;
             result           <= 0;
