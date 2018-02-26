@@ -14,9 +14,10 @@ typedef struct {
 
 typedef struct {
     logic         busy;
-    logic [31:0]  value1;
-    logic [31:0]  value2;
-    logic [2:0]   funct3;
+    inst          value1;
+    inst          value2;
+    inst          address;
+    inst          address_offset;
     ALU           alu1;
     ALU           alu2;
 } ReservationStation ;
@@ -30,6 +31,7 @@ typedef struct {
     logic         is_resister;
     logic [5:0]   reg_num;
     logic [31:0]  address;
+    logic [31:0]  address_offset;
     logic [31:0]  value;
     ALU           alu;
 } ReorderBuffer;

@@ -15,7 +15,7 @@ module CPU(
     inst pc;
     bit  is_halt_N;
     inst memory[1024];
-    inst result_branch[8];
+    logic result_branch[8];
     inst result[16];
     bit  result_available[$size(result)];
     ReservationStation rstation[$size(result)];
@@ -37,12 +37,19 @@ module CPU(
             for (int i=0; i<32;i++) begin
                 `define rc rbuffer[commit_index]
                 if (`rc.available == 0 && `rc.alu == 0) begin
-                    if (`rc.is_branch && `rc.is_failure) begin
-                        // [設計]
-                        // 分岐予測に失敗したら投機的に実行した部分を捨てる
-                        for (int i=0; i<$size(rbuffer); i++) rbuffer[i].available = 1;
-                        for (int i=0; i<$size(rbuffer); i++) regs[i].in_rbuffer   = 1'b0;
-                        commit_index = write_index;
+                    if (`rc.is_branch) begin
+                        if (`rc.is_failure) begin
+                            // [設計]
+                            // 分岐予測に失敗したら投機的に実行した部分を捨てる
+                            pc = `rc.value;
+                            for (int i=0; i<$size(rbuffer); i++) rbuffer[i].available = 1;
+                            for (int i=0; i<$size(rbuffer); i++) regs[i].in_rbuffer   = 1'b0;
+                            commit_index = write_index;
+                        end else begin
+                            // [設計]
+                            // 予測に成功すれば放置
+                            commit_index = commit_index + 1;
+                        end
                     end else if (`rc.is_resister) begin
                         // [設計]
                         // リオーダバッファからレジスタへの書き込み
@@ -88,7 +95,7 @@ module CPU(
                         rbuffer[i].value <= result[l];
                         rbuffer[i].alu   <= 8'h00;
                         if (rbuffer[i].is_branch)
-                            rbuffer[i].is_failure <= result_branch[l];
+                            rbuffer[i].is_failure <= result_branch[l-8];
                     end
                 end
 
@@ -112,11 +119,10 @@ module CPU(
     always @(posedge clk) begin
         automatic inst instruction;
         automatic byte rstation_num;
-        automatic byte consumed_inst = 0;
         // [設計]
         // Decode
         for (int l=1; l<$size(rstation); l++) begin
-            instruction = instCache[pc+consumed_inst];
+            instruction = instCache[pc];
             if (rbuffer[write_index].available) begin
                 if (instruction[op_begin:op_end] == op_resister_resister) begin
                     if (instruction[funct3_begin:funct3_end] == funct3_add_sub) begin
@@ -125,30 +131,38 @@ module CPU(
                             if (rstation_num != 0) begin
                                 send_reservation_station_arith(instruction, rstation_num);
                                 write_index   = write_index + 1;
-                                consumed_inst = consumed_inst + 1;
+                                pc = pc + 1;
                             end
                         end else if (instruction[funct7_begin:funct7_end] == funct7_sub) begin
                             rstation_num = search_available_rstation(5, 7);
                             if (rstation_num != 0) begin
                                 send_reservation_station_arith(instruction, rstation_num);
                                 write_index   = write_index + 1;
-                                consumed_inst = consumed_inst + 1;
+                                pc = pc + 1;
                             end
                         end
                     end
+                end else if (instruction[op_begin:op_end] == op_conditional_branch) begin
+                    if (instruction[funct3_begin:funct3_end] == funct3_beq) begin
+                        rstation_num = search_available_rstation(8, 10);
+                        if (rstation_num != 0) begin
+                            send_reservation_station_conditional_branch(instruction, pc, rstation_num);
+                            write_index = write_index + 1;
+                            pc = pc + 1;
+                        end
+                    end
                 end else if (instruction[op_begin:op_end] == op_nop) begin
-                    consumed_inst = consumed_inst + 1;
+                    pc = pc + 1;
                 end else if (instruction[op_begin:op_end] == op_halt) begin
-                    rstation_num = search_available_rstation(8, 8);
+                    rstation_num = search_available_rstation(15, 15);
                     if (rstation_num != 0) begin
                         send_reservation_station_halt(rstation_num);
-                        consumed_inst = consumed_inst + 1;
+                        pc = pc + 1;
                         write_index   = write_index + 1;
                     end
                 end
             end
         end
-        pc = pc + consumed_inst;
     end
 
     function void initialize(); // {{{
@@ -174,12 +188,12 @@ module CPU(
         is_halt_N <= 1;
     endfunction /// }}}
 
-function byte search_available_rstation(byte s, byte l); // {{{
-    for (int i=s; i<=l; i++)
-        if (!rstation[i].busy)
-            return i;
-    return 0;
-endfunction // }}}
+    function byte search_available_rstation(byte s, byte l); // {{{
+        for (int i=s; i<=l; i++)
+            if (!rstation[i].busy)
+                return i;
+        return 0;
+    endfunction // }}}
 
     function void send_reservation_station_arith(inst instruction, byte i); // {{{
         // rs1 is available
@@ -215,10 +229,56 @@ endfunction // }}}
         rbuffer[write_index].reg_num     = instruction[rd_begin:rd_end];
         rbuffer[write_index].available   = 1'b0;
         rbuffer[write_index].is_store    = 1'b0;
+        rbuffer[write_index].is_branch   = 1'b0;
         rbuffer[write_index].is_halt     = 1'b0;
         rbuffer[write_index].is_resister = 1'b1;
         regs[instruction[rd_begin:rd_end]].rbuffer    = write_index;
         regs[instruction[rd_begin:rd_end]].in_rbuffer = 1'b1;
+    endfunction // }}}
+
+    function void send_reservation_station_conditional_branch(inst instruction, inst pc, byte i); // {{{
+        automatic inst offset;        
+        // rs1 is available
+        if (regs[instruction[rs1_begin:rs1_end]].in_rbuffer == 1'b0) begin
+            rstation[i].value1 = regs[instruction[rs1_begin:rs1_end]].data;
+            rstation[i].alu1   = 8'd0;
+        end else begin
+            if (rbuffer[regs[instruction[rs1_begin:rs1_end]].rbuffer].alu == 0) begin
+                rstation[i].value1 = rbuffer[regs[instruction[rs1_begin:rs1_end]].rbuffer].value;
+                rstation[i].alu1 = 8'd0;
+            end else begin
+                rstation[i].value1 = 32'd0;
+                rstation[i].alu1   = rbuffer[regs[instruction[rs1_begin:rs1_end]].rbuffer].alu;
+            end
+        end
+                                                             
+        // rs2 is available
+        if (regs[instruction[rs2_begin:rs2_end]].in_rbuffer == 1'b0) begin
+            rstation[i].value2 = regs[instruction[rs2_begin:rs2_end]].data;
+            rstation[i].alu2   = 8'd0;
+        end else begin
+            if (rbuffer[regs[instruction[rs2_begin:rs2_end]].rbuffer].alu == 0) begin
+                rstation[i].value2 = rbuffer[regs[instruction[rs2_begin:rs2_end]].rbuffer].value;
+                rstation[i].alu2 = 8'd0;
+            end else begin
+                rstation[i].value2 = 32'd0;
+                rstation[i].alu2   = rbuffer[regs[instruction[rs2_begin:rs2_end]].rbuffer].alu;
+            end
+        end
+
+        `define h instruction[0]
+        offset = {`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,`h,
+            `h,instruction[24],instruction[6:1],instruction[23:20]};
+        `undef h
+        rstation[i].busy                 = 1'b1;
+        rstation[i].address              = pc;
+        rstation[i].address_offset       = offset;
+        rbuffer[write_index].alu         = i;
+        rbuffer[write_index].available   = 1'b0;
+        rbuffer[write_index].is_store    = 1'b0;
+        rbuffer[write_index].is_resister = 1'b0;
+        rbuffer[write_index].is_branch   = 1'b1;
+        rbuffer[write_index].is_halt     = 1'b0;
     endfunction // }}}
 
     function void send_reservation_station_halt(byte i); // {{{
@@ -228,6 +288,7 @@ endfunction // }}}
         rbuffer[write_index].available    = 0;
         rbuffer[write_index].is_resister  = 1'b0;
         rbuffer[write_index].is_store     = 1'b0;
+        rbuffer[write_index].is_branch    = 1'b0;
         rbuffer[write_index].is_halt      = 1'b1;
     endfunction // }}}
 
@@ -238,6 +299,7 @@ endfunction // }}}
         rbuffer[write_index].available    = 0;
         rbuffer[write_index].is_resister  = 1'b0;
         rbuffer[write_index].is_store     = 1'b0;
+        rbuffer[write_index].is_branch    = 1'b0;
         rbuffer[write_index].is_halt      = 1'b0;
     endfunction // }}}
 
@@ -259,6 +321,42 @@ endfunction // }}}
                 .*
             );
         end
+        for (i=8; i<=10; i++) begin : beq_module_block
+            Beq beq_module (
+                .rstation(rstation[i]),
+                .result(result[i]),
+                .result_branch(result_branch[i-8]),
+                .result_available(result_available[i]),
+                .*
+            );
+        end
     endgenerate 
 endmodule
 
+module Beq(
+    input wire                clk,
+    input wire                RSTN_N,
+    input ReservationStation  rstation,
+    output logic [31:0]       result,
+    output logic              result_branch,
+    output logic              result_available
+);
+
+    always @(posedge clk or negedge RSTN_N) begin
+        if (!RSTN_N) begin
+            result_available <= 0;
+            result           <= 0;
+        end else begin
+            if (rstation.alu1==8'd0 && rstation.alu2==8'd0 && rstation.busy) begin
+                result_available <= 1;
+                result_branch <= rstation.value1 == rstation.value2;
+                result <= rstation.address + rstation.address_offset;
+                $display("result: %0d", rstation.address + rstation.address_offset);
+                $display("result_branch: %0d", rstation.value1 == rstation.value2);
+            end else begin
+                result_available <= 0;
+                result           <= 0;
+            end
+        end
+    end
+endmodule

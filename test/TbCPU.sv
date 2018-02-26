@@ -31,14 +31,16 @@ initial begin
         cpu.instCache[3+13] = 32'b1100110_00001_000_00001_00001_0000000;     
         cpu.instCache[3+14] = 32'b1100110_00001_000_00001_00001_0000000;     
         cpu.instCache[3+15] = 32'b1100110_00001_000_00001_00001_0000000;     
-        cpu.instCache[3+16] = 32'b1100110_00001_000_00001_00001_0000000;     
+        // cpu.instCache[3+16] = 32'b1100110_00001_000_00001_00001_0000000;     
+        cpu.instCache[3+16] = 32'b1100011_10110_000_00001_00001_1111111; // beq 1 1 -10
         cpu.instCache[3+17] = 32'hffff_ffff;
         // cpu.instCache[11] = 32'b1100110_00001_000_00001_00001_0000000;     
         // cpu.instCache[7] = 32'b1100110_00010_000_00001_00001_0000000;     
         // cpu.instCache[8] = 32'b1100110_00001_000_00001_00001_0000010;     
     end
 
-    always @(negedge cpu.is_halt_N) begin
+    // always @(negedge cpu.is_halt_N) begin
+    always #100000 begin
         $display("====================");
         $display("clk_cnt: %0d", cpu.clk_cnt);
         for (int i=0; i<10; i++) begin
